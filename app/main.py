@@ -11,10 +11,17 @@ from app.services.backend_client import get_diagrama, get_proyecto
 from app.agents.diagram_agent import execute_plan
 from app.schemas.diagram_execution import DiagramExecutePlanRequest, DiagramExecutePlanResponse
 
+from fastapi.responses import FileResponse
+
+from app.schemas.codegen import CodegenRequest, CodegenResponse
+from app.services.codegen_storage import get_generated_zip_path, save_generated_project
+from app.services.spring_boot_builder import build_spring_boot_project
 
 from app.agents.suggestion_agent import run_suggestion
 from app.schemas.suggestion import SuggestionRequest, SuggestionResponse
 
+from app.agents.validation_agent import run_validation
+from app.schemas.validation import ValidationRequest, ValidationResponse
 app = FastAPI(
     title="DrawSchema AI Service",
     version="1.0.0",
@@ -152,3 +159,84 @@ async def suggestions(
             status_code=502,
             detail=f"Error del proveedor IA: {exc}",
         ) from exc
+
+
+
+@app.post("/ai/validation", response_model=ValidationResponse)
+async def validation(
+    datos: ValidationRequest,
+    authorization: str | None = Header(default=None),
+):
+    token = extract_token(authorization)
+    context = await build_context(datos.proyecto_id, datos.diagrama_id, token)
+
+    try:
+        return await run_validation(datos.message, context)
+    except RuntimeError as exc:
+        raise HTTPException(status_code=500, detail=str(exc)) from exc
+    except Exception as exc:
+        raise HTTPException(
+            status_code=502,
+            detail=f"Error del proveedor IA: {exc}",
+        ) from exc
+
+@app.post("/ai/codegen", response_model=CodegenResponse)
+async def codegen(
+    datos: CodegenRequest,
+    authorization: str | None = Header(default=None),
+):
+    token = extract_token(authorization)
+    context = await build_context(datos.proyecto_id, datos.diagrama_id, token)
+
+    try:
+        files, warnings = build_spring_boot_project(
+            context=context,
+            project_name=datos.project_name,
+            base_package=datos.base_package,
+            database_name=datos.database_name,
+        )
+
+        generation_id, _zip_path = save_generated_project(
+            project_name=datos.project_name,
+            files=files,
+        )
+
+        return CodegenResponse(
+            success=True,
+            summary=(
+                f"Backend Spring Boot '{datos.project_name}' generado correctamente "
+                f"con {len(files)} archivos."
+            ),
+            target=datos.target,
+            project_name=datos.project_name,
+            base_package=datos.base_package,
+            database_name=datos.database_name,
+            files=files,
+            warnings=warnings,
+            generation_id=generation_id,
+            download_url=f"/ai/codegen/{generation_id}/download",
+        )
+
+    except RuntimeError as exc:
+        raise HTTPException(status_code=500, detail=str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except Exception as exc:
+        raise HTTPException(
+            status_code=502,
+            detail=f"Error del proveedor IA: {exc}",
+        ) from exc
+
+
+@app.get("/ai/codegen/{generation_id}/download")
+async def download_codegen(generation_id: str):
+    zip_path = get_generated_zip_path(generation_id)
+
+    if zip_path is None:
+        raise HTTPException(status_code=404, detail="Proyecto generado no encontrado")
+
+    return FileResponse(
+        path=zip_path,
+        filename=zip_path.name,
+        media_type="application/zip",
+    )

@@ -55,6 +55,57 @@ Formato recomendado de arguments para create_relation:
   "sourceCardinality": "1",
   "targetCardinality": "0..*"
 }
+
+Formato recomendado de arguments para update_class:
+{
+  "className": "Cliente",
+  "newName": "ClienteVIP",
+  "attributes": [
+    {"name": "id", "type": "BIGINT", "primaryKey": true, "nullable": false}
+  ],
+  "methods": [
+    {"name": "registrar", "returnType": "void", "parameters": []}
+  ]
+}
+
+Formato recomendado de arguments para delete_class:
+{
+  "className": "Cliente"
+}
+
+Formato recomendado de arguments para move_class:
+{
+  "className": "Cliente",
+  "x": 320,
+  "y": 180
+}
+
+Formato recomendado de arguments para update_relation:
+{
+  "sourceName": "Cliente",
+  "targetName": "Venta",
+  "relationType": "composition",
+  "sourceCardinality": "1",
+  "targetCardinality": "1..*"
+}
+
+Si conoces el id de la relacion, puedes usar:
+{
+  "relationId": "rel-123",
+  "relationType": "aggregation"
+}
+
+Formato recomendado de arguments para delete_relation:
+{
+  "sourceName": "Cliente",
+  "targetName": "Venta",
+  "relationType": "association"
+}
+
+Formato recomendado de arguments para ask_user:
+{
+  "question": "Que tipo de relacion debe existir entre Cliente y Venta?"
+}
 """
 
 
