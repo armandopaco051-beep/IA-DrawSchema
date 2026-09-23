@@ -19,6 +19,7 @@ class PlannerRequest(BaseModel):
     message: str = Field(min_length=1)
     diagrama_id: int | None = None
     proyecto_id: int | None = None
+    user_role: str | None = None
 
 class PlannerAction(BaseModel):
     order: int

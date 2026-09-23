@@ -1,7 +1,8 @@
 from __future__ import annotations
 
+import json
 import re
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any
 
 from app.schemas.codegen import GeneratedFile
@@ -17,7 +18,6 @@ class Attribute:
     primary_key: bool
     nullable: bool
 
-
 @dataclass
 class Entity:
     """Representa una clase UML convertida en entidad candidata para Spring Boot."""
@@ -30,6 +30,10 @@ class Entity:
     attributes: list[Attribute]
     id_attribute: Attribute
     generated_id: bool
+    is_composite_id: bool = False
+    composite_id_class_name: str | None = None
+    pk_attributes: list[Attribute] = field(default_factory=list)
+
 
 
 def _clean_words(value: str) -> list[str]:
@@ -113,6 +117,22 @@ def map_java_type(raw_type: Any) -> str:
     return mappings.get(normalized, "String")
 
 
+def map_schema_type(java_type: str) -> str:
+    """Convierte tipos Java a los tipos simples que entiende la app movil."""
+
+    mappings = {
+        "Long": "int",
+        "Integer": "int",
+        "Double": "double",
+        "Float": "double",
+        "BigDecimal": "double",
+        "Boolean": "boolean",
+        "LocalDate": "date",
+        "LocalDateTime": "datetime",
+    }
+    return mappings.get(java_type, "string")
+
+
 def parse_entities(context: dict[str, Any]) -> tuple[list[Entity], list[str]]:
     """Lee el JSONB del diagrama y lo transforma en entidades internas."""
 
@@ -155,8 +175,26 @@ def parse_entities(context: dict[str, Any]) -> tuple[list[Entity], list[str]]:
 
         id_attributes = [attribute for attribute in attributes if attribute.primary_key]
         generated_id = False
+        is_composite_id = False
+        composite_id_class_name = None
+        pk_attributes = []
 
-        if id_attributes:
+        if len(id_attributes) > 1:
+            is_composite_id = True
+            composite_id_class_name = f"{class_name}Id"
+            pk_attributes = id_attributes
+            id_attribute = Attribute(
+                name="id",
+                java_name="id",
+                java_type=composite_id_class_name,
+                primary_key=True,
+                nullable=False,
+            )
+            warnings.append(
+                f"La entidad {class_name} posee clave compuesta con {len(id_attributes)} campos ({[a.name for a in id_attributes]}); "
+                f"se generara la clase @Embeddable {composite_id_class_name}."
+            )
+        elif id_attributes:
             id_attribute = id_attributes[0]
         else:
             generated_id = True
@@ -182,8 +220,12 @@ def parse_entities(context: dict[str, Any]) -> tuple[list[Entity], list[str]]:
                 attributes=attributes,
                 id_attribute=id_attribute,
                 generated_id=generated_id,
+                is_composite_id=is_composite_id,
+                composite_id_class_name=composite_id_class_name,
+                pk_attributes=pk_attributes,
             )
         )
+
 
     if not entities:
         raise ValueError("No se puede generar backend porque el diagrama no tiene clases.")
@@ -250,6 +292,52 @@ def field_declaration(attribute: Attribute, include_validation: bool = True) -> 
     return lines
 
 
+def generate_composite_id_class(base_package: str, entity: Entity) -> GeneratedFile:
+    """Genera la clase @Embeddable para entidades con clave primaria compuesta (ej: DetallesPedidoId)."""
+
+    imports = [
+        "jakarta.persistence.Embeddable",
+        "java.io.Serializable",
+        "lombok.AllArgsConstructor",
+        "lombok.EqualsAndHashCode",
+        "lombok.Getter",
+        "lombok.NoArgsConstructor",
+        "lombok.Setter",
+    ]
+    imports.extend(common_imports(entity.pk_attributes))
+
+    fields: list[str] = []
+    for attr in entity.pk_attributes:
+        fields.append(f"    private {attr.java_type} {attr.java_name};")
+
+    content = "\n".join(
+        [
+            f"package {base_package}.models;",
+            "",
+            *[f"import {item};" for item in sorted(set(imports))],
+            "",
+            "@Embeddable",
+            "@Getter",
+            "@Setter",
+            "@NoArgsConstructor",
+            "@AllArgsConstructor",
+            "@EqualsAndHashCode",
+            f"public class {entity.composite_id_class_name} implements Serializable {{",
+            "    private static final long serialVersionUID = 1L;",
+            "",
+            *fields,
+            "}",
+            "",
+        ]
+    )
+
+    return GeneratedFile(
+        path=f"src/main/java/{package_path(base_package)}/models/{entity.composite_id_class_name}.java",
+        language="java",
+        content=content,
+    )
+
+
 def generate_model(base_package: str, entity: Entity) -> GeneratedFile:
     """Genera el archivo model/Entity.java con anotaciones JPA."""
 
@@ -260,18 +348,36 @@ def generate_model(base_package: str, entity: Entity) -> GeneratedFile:
         "lombok.NoArgsConstructor",
         "lombok.Setter",
     ]
-    validation_needed = any(validation_annotation(attribute) for attribute in entity.attributes)
-
-    if validation_needed:
-        imports.extend(["jakarta.validation.constraints.NotBlank", "jakarta.validation.constraints.NotNull"])
-
-    imports.extend(common_imports(entity.attributes))
 
     fields: list[str] = []
 
-    for attribute in entity.attributes:
-        fields.extend(field_declaration(attribute))
+    if entity.is_composite_id:
+        fields.append("    @EmbeddedId")
+        fields.append(f"    private {entity.composite_id_class_name} id;")
         fields.append("")
+
+        non_pk_attributes = [attribute for attribute in entity.attributes if not attribute.primary_key]
+        validation_needed = any(validation_annotation(attribute) for attribute in non_pk_attributes)
+
+        if validation_needed:
+            imports.extend(["jakarta.validation.constraints.NotBlank", "jakarta.validation.constraints.NotNull"])
+
+        imports.extend(common_imports(non_pk_attributes))
+
+        for attribute in non_pk_attributes:
+            fields.extend(field_declaration(attribute))
+            fields.append("")
+    else:
+        validation_needed = any(validation_annotation(attribute) for attribute in entity.attributes)
+
+        if validation_needed:
+            imports.extend(["jakarta.validation.constraints.NotBlank", "jakarta.validation.constraints.NotNull"])
+
+        imports.extend(common_imports(entity.attributes))
+
+        for attribute in entity.attributes:
+            fields.extend(field_declaration(attribute))
+            fields.append("")
 
     content = "\n".join(
         [
@@ -299,6 +405,7 @@ def generate_model(base_package: str, entity: Entity) -> GeneratedFile:
     )
 
 
+
 def generate_repository(base_package: str, entity: Entity) -> GeneratedFile:
     """Genera el repository que extiende JpaRepository."""
 
@@ -320,6 +427,19 @@ public interface {entity.class_name}Repository extends JpaRepository<{entity.cla
     )
 
 
+def dto_field_declaration(attribute: Attribute) -> list[str]:
+    """Genera las lineas de un campo para DTO (solo validaciones Jakarta, sin anotaciones JPA @Column/@Id)."""
+
+    lines: list[str] = []
+    validation = validation_annotation(attribute)
+
+    if validation:
+        lines.append(f"    {validation}")
+
+    lines.append(f"    private {attribute.java_type} {attribute.java_name};")
+    return lines
+
+
 def generate_request_dto(base_package: str, entity: Entity) -> GeneratedFile:
     """Genera el DTO usado para crear o actualizar una entidad."""
 
@@ -338,7 +458,7 @@ def generate_request_dto(base_package: str, entity: Entity) -> GeneratedFile:
     fields: list[str] = []
 
     for attribute in attributes:
-        fields.extend(field_declaration(attribute))
+        fields.extend(dto_field_declaration(attribute))
         fields.append("")
 
     content = "\n".join(
@@ -585,6 +705,88 @@ public class {class_name} {{
     )
 
 
+def generate_backend_metadata_controller(
+    base_package: str,
+    project_name: str,
+    entities: list[Entity],
+) -> GeneratedFile:
+    """Genera los endpoints usados por el movil para detectar y describir el backend."""
+
+    schema = {
+        "proyecto": project_name,
+        "version": "1.0",
+        "entidades": [
+            {
+                "nombre": entity.name,
+                "endpoint": f"/api/{entity.route_name}",
+                "id": {
+                    "nombre": entity.id_attribute.java_name,
+                    "type": map_schema_type(entity.id_attribute.java_type),
+                    "generado": entity.generated_id,
+                    "compuesto": entity.is_composite_id,
+                },
+                "atributos": {
+                    attribute.java_name: {
+                        "type": map_schema_type(attribute.java_type),
+                        "required": not attribute.nullable,
+                    }
+                    for attribute in entity.attributes
+                    if not attribute.primary_key
+                },
+                "operaciones": [
+                    "CREAR",
+                    "LISTAR",
+                    "OBTENER",
+                    "ACTUALIZAR",
+                    "ELIMINAR",
+                ],
+            }
+            for entity in entities
+        ],
+    }
+    schema_json = json.dumps(schema, ensure_ascii=False, indent=2)
+    project_literal = json.dumps(project_name, ensure_ascii=False)
+
+    content = f'''package {base_package}.controllers;
+
+import org.springframework.http.MediaType;
+import org.springframework.web.bind.annotation.GetMapping;
+import org.springframework.web.bind.annotation.RequestMapping;
+import org.springframework.web.bind.annotation.RestController;
+
+import java.util.Map;
+
+@RestController
+@RequestMapping("/api")
+public class BackendMetadataController {{
+
+    private static final String SCHEMA_JSON = """
+{schema_json}
+            """;
+
+    @GetMapping("/health")
+    public Map<String, Object> health() {{
+        return Map.of(
+                "status", "UP",
+                "project", {project_literal},
+                "schemaVersion", "1.0"
+        );
+    }}
+
+    @GetMapping(value = "/schema", produces = MediaType.APPLICATION_JSON_VALUE)
+    public String schema() {{
+        return SCHEMA_JSON;
+    }}
+}}
+'''
+
+    return GeneratedFile(
+        path=f"src/main/java/{package_path(base_package)}/controllers/BackendMetadataController.java",
+        language="java",
+        content=content,
+    )
+
+
 def generate_common_files(base_package: str, project_name: str, database_name: str) -> list[GeneratedFile]:
     """Genera archivos comunes: pom.xml, properties, README, SQL, CORS y errores."""
 
@@ -656,7 +858,8 @@ spring.jpa.show-sql=true
 spring.jpa.properties.hibernate.format_sql=true
 spring.jpa.properties.hibernate.dialect=org.hibernate.dialect.PostgreSQLDialect
 
-server.port=8080
+server.address=0.0.0.0
+server.port=${{SERVER_PORT:8086}}
 """
 
     database_sql = f"CREATE DATABASE {database_name};\n"
@@ -800,13 +1003,17 @@ def build_spring_boot_project(
 
     files.extend(generate_common_files(base_package, project_name, database_name))
     files.append(generate_application(base_package, project_name))
+    files.append(generate_backend_metadata_controller(base_package, project_name, entities))
 
     for entity in entities:
+        if entity.is_composite_id:
+            files.append(generate_composite_id_class(base_package, entity))
         files.append(generate_model(base_package, entity))
         files.append(generate_repository(base_package, entity))
         files.append(generate_request_dto(base_package, entity))
         files.append(generate_response_dto(base_package, entity))
         files.append(generate_service(base_package, entity))
         files.append(generate_controller(base_package, entity))
+
 
     return files, warnings

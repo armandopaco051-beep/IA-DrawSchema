@@ -7,7 +7,8 @@ from app.schemas.chat import PlannerAction
 
 class DiagramExecutePlanRequest(BaseModel):
     diagrama_id: int
-    autor_codigo: str
+    proyecto_id: int | None = None
+    autor_codigo: str = "IA Assistant"
     actions: list[PlannerAction] = Field(min_length=1)
     confirmed: bool = False
 

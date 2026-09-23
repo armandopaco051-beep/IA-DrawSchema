@@ -7,6 +7,9 @@ from app.schemas.diagram_execution import (
 from app.tools.diagram_tools import execute_diagram_action, load_diagram_context
 
 
+from app.services.rbac_guard import verify_user_permission
+
+
 async def execute_plan(datos: DiagramExecutePlanRequest, token: str | None):
     executed = []
 
@@ -17,6 +20,11 @@ async def execute_plan(datos: DiagramExecutePlanRequest, token: str | None):
             executed=[],
             diagrama=None,
         )
+
+    # Validar permisos RBAC si se proporciona el id del proyecto
+    if datos.proyecto_id is not None:
+        await verify_user_permission(datos.proyecto_id, token, min_role="EDITOR")
+
 
     for action in datos.actions:
         if action.requires_confirmation and not datos.confirmed:

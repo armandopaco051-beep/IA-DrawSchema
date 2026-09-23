@@ -6,7 +6,8 @@ from app.agents.planner_agent import run_planner
 from app.config.agents_models import get_agent_model_name
 from app.config.settings import settings
 from app.schemas.chat import ChatRequest, ChatResponse, PlannerRequest, PlannerResponse
-from app.services.backend_client import get_diagrama, get_proyecto
+from app.services.backend_client import get_diagrama, get_proyecto, get_permisos_usuario
+from app.services.rbac_guard import verify_user_permission
 
 from app.agents.diagram_agent import execute_plan
 from app.schemas.diagram_execution import DiagramExecutePlanRequest, DiagramExecutePlanResponse
@@ -60,6 +61,8 @@ async def build_context(
     try:
         if proyecto_id is not None:
             context["proyecto"] = await get_proyecto(proyecto_id, token)
+            permiso_info = await get_permisos_usuario(proyecto_id, token)
+            context["user_role"] = permiso_info.get("rol", "EDITOR")
 
         if diagrama_id is not None:
             context["diagrama"] = await get_diagrama(diagrama_id, token)
@@ -122,6 +125,9 @@ async def planner(
     token = extract_token(authorization)
     context = await build_context(datos.proyecto_id, datos.diagrama_id, token)
 
+    if datos.user_role:
+        context["user_role"] = datos.user_role.upper()
+
     try:
         return await run_planner(datos.message, context)
     except RuntimeError as exc:
@@ -132,6 +138,7 @@ async def planner(
             detail=f"Error del proveedor IA: {exc}",
         ) from exc
 
+
 # Endpoint para ejecutar un plan de diagrama
 @app.post("/ai/diagram/execute-plan", response_model=DiagramExecutePlanResponse)
 async def execute_diagram_plan(
@@ -140,8 +147,8 @@ async def execute_diagram_plan(
 ):
     token = extract_token(authorization)
     return await execute_plan(datos, token)
-    
-    
+
+
 @app.post("/ai/suggestions", response_model=SuggestionResponse)
 async def suggestions(
     datos: SuggestionRequest,
@@ -159,7 +166,6 @@ async def suggestions(
             status_code=502,
             detail=f"Error del proveedor IA: {exc}",
         ) from exc
-
 
 
 @app.post("/ai/validation", response_model=ValidationResponse)
@@ -180,13 +186,19 @@ async def validation(
             detail=f"Error del proveedor IA: {exc}",
         ) from exc
 
+
 @app.post("/ai/codegen", response_model=CodegenResponse)
 async def codegen(
     datos: CodegenRequest,
     authorization: str | None = Header(default=None),
 ):
     token = extract_token(authorization)
+
+    if datos.proyecto_id is not None:
+        await verify_user_permission(datos.proyecto_id, token, min_role="EDITOR")
+
     context = await build_context(datos.proyecto_id, datos.diagrama_id, token)
+
 
     try:
         files, warnings = build_spring_boot_project(

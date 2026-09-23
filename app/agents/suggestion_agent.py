@@ -83,6 +83,7 @@ Equipo tiene Jugadores.
 Usala cuando una relacion necesita atributos propios.
 Ejemplo:
 Estudiante se inscribe en Materia, y la Inscripcion tiene fecha o nota.
+Regla: La clase de asociacion intermedia hereda las PKs de ambas clases como clave primaria compuesta (marcando cada una con primaryKey=true y foreignKey=true), mas sus atributos propios.
 
 6. Realization:
 Usala cuando una clase implementa una interfaz.
