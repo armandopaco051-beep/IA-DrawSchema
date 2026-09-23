@@ -45,6 +45,10 @@ class SpringBootBuilderMetadataTest(unittest.TestCase):
             "src/main/java/com/drawschema/generated/controllers/BackendMetadataController.java"
         ]
         properties = by_path["src/main/resources/application.properties"]
+        pom = by_path["pom.xml"]
+        mdns_publisher = by_path[
+            "src/main/java/com/drawschema/generated/config/MdnsServicePublisher.java"
+        ]
 
         match = re.search(r'SCHEMA_JSON = """\n(.*?)\n\s*""";', controller, re.S)
         self.assertIsNotNone(match)
@@ -55,6 +59,10 @@ class SpringBootBuilderMetadataTest(unittest.TestCase):
         self.assertTrue(schema["entidades"][0]["atributos"]["nombre"]["required"])
         self.assertIn("server.address=0.0.0.0", properties)
         self.assertIn("server.port=${SERVER_PORT:8086}", properties)
+        self.assertIn("drawschema.discovery.enabled=true", properties)
+        self.assertIn("<artifactId>jmdns</artifactId>", pom)
+        self.assertIn('SERVICE_TYPE = "_drawschema._tcp.local."', mdns_publisher)
+        self.assertIn('properties.put("project", "restaurante-api")', mdns_publisher)
 
 
 if __name__ == "__main__":

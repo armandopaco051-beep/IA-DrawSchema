@@ -790,6 +790,8 @@ public class BackendMetadataController {{
 def generate_common_files(base_package: str, project_name: str, database_name: str) -> list[GeneratedFile]:
     """Genera archivos comunes: pom.xml, properties, README, SQL, CORS y errores."""
 
+    project_literal = json.dumps(project_name, ensure_ascii=False)
+
     pom = f"""<?xml version="1.0" encoding="UTF-8"?>
 <project xmlns="http://maven.apache.org/POM/4.0.0"
          xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
@@ -835,6 +837,11 @@ def generate_common_files(base_package: str, project_name: str, database_name: s
             <artifactId>lombok</artifactId>
             <optional>true</optional>
         </dependency>
+        <dependency>
+            <groupId>org.jmdns</groupId>
+            <artifactId>jmdns</artifactId>
+            <version>3.6.3</version>
+        </dependency>
     </dependencies>
 
     <build>
@@ -860,6 +867,7 @@ spring.jpa.properties.hibernate.dialect=org.hibernate.dialect.PostgreSQLDialect
 
 server.address=0.0.0.0
 server.port=${{SERVER_PORT:8086}}
+drawschema.discovery.enabled=true
 """
 
     database_sql = f"CREATE DATABASE {database_name};\n"
@@ -963,6 +971,111 @@ public class CorsConfig implements WebMvcConfigurer {{
 }}
 """
 
+    mdns_config = f"""package {base_package}.config;
+
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+import org.springframework.beans.factory.DisposableBean;
+import org.springframework.beans.factory.annotation.Value;
+import org.springframework.boot.web.context.WebServerInitializedEvent;
+import org.springframework.context.ApplicationListener;
+import org.springframework.stereotype.Component;
+
+import javax.jmdns.JmDNS;
+import javax.jmdns.ServiceInfo;
+import java.net.DatagramSocket;
+import java.net.Inet4Address;
+import java.net.InetAddress;
+import java.net.InetSocketAddress;
+import java.net.NetworkInterface;
+import java.util.Collections;
+import java.util.HashMap;
+import java.util.Map;
+
+@Component
+public class MdnsServicePublisher
+        implements ApplicationListener<WebServerInitializedEvent>, DisposableBean {{
+
+    private static final Logger log = LoggerFactory.getLogger(MdnsServicePublisher.class);
+    private static final String SERVICE_TYPE = "_drawschema._tcp.local.";
+
+    @Value("${{drawschema.discovery.enabled:true}}")
+    private boolean enabled;
+
+    private volatile JmDNS jmDNS;
+
+    @Override
+    public void onApplicationEvent(WebServerInitializedEvent event) {{
+        if (!enabled || jmDNS != null) return;
+
+        Thread publisher = new Thread(() -> publish(event.getWebServer().getPort()), "drawschema-mdns");
+        publisher.setDaemon(true);
+        publisher.start();
+    }}
+
+    private void publish(int port) {{
+        try {{
+            InetAddress address = findLanAddress();
+            Map<String, String> properties = new HashMap<>();
+            properties.put("project", {project_literal});
+            properties.put("schemaVersion", "1.0");
+            properties.put("healthPath", "/api/health");
+            properties.put("schemaPath", "/api/schema");
+
+            JmDNS instance = JmDNS.create(address);
+            ServiceInfo service = ServiceInfo.create(
+                    SERVICE_TYPE,
+                    {project_literal},
+                    port,
+                    0,
+                    0,
+                    properties
+            );
+            instance.registerService(service);
+            jmDNS = instance;
+            log.info("DrawSchema disponible en http://{{}}:{{}}", address.getHostAddress(), port);
+        }} catch (Exception exception) {{
+            log.warn("No se pudo publicar DrawSchema por mDNS: {{}}", exception.getMessage());
+        }}
+    }}
+
+    private InetAddress findLanAddress() throws Exception {{
+        try (DatagramSocket socket = new DatagramSocket()) {{
+            socket.connect(new InetSocketAddress("8.8.8.8", 53));
+            InetAddress routedAddress = socket.getLocalAddress();
+            if (routedAddress instanceof Inet4Address
+                    && !routedAddress.isAnyLocalAddress()
+                    && !routedAddress.isLoopbackAddress()) {{
+                return routedAddress;
+            }}
+        }} catch (Exception ignored) {{
+            // Sin ruta de salida: se intenta con las interfaces disponibles.
+        }}
+
+        InetAddress fallback = null;
+        for (NetworkInterface network : Collections.list(NetworkInterface.getNetworkInterfaces())) {{
+            if (!network.isUp() || network.isLoopback() || network.isVirtual()) continue;
+            for (InetAddress address : Collections.list(network.getInetAddresses())) {{
+                if (!(address instanceof Inet4Address) || address.isLoopbackAddress()) continue;
+                if (address.isSiteLocalAddress()) return address;
+                if (!address.isLinkLocalAddress()) fallback = address;
+            }}
+        }}
+        if (fallback != null) return fallback;
+        throw new IllegalStateException("No se encontro una direccion IPv4 de red local");
+    }}
+
+    @Override
+    public void destroy() throws Exception {{
+        JmDNS instance = jmDNS;
+        if (instance != null) {{
+            instance.unregisterAllServices();
+            instance.close();
+        }}
+    }}
+}}
+"""
+
     return [
         GeneratedFile(path="pom.xml", language="xml", content=pom),
         GeneratedFile(path="README.md", language="markdown", content=readme),
@@ -986,6 +1099,11 @@ public class CorsConfig implements WebMvcConfigurer {{
             path=f"src/main/java/{package_path(base_package)}/config/CorsConfig.java",
             language="java",
             content=cors_config,
+        ),
+        GeneratedFile(
+            path=f"src/main/java/{package_path(base_package)}/config/MdnsServicePublisher.java",
+            language="java",
+            content=mdns_config,
         ),
     ]
 
