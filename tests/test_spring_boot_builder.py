@@ -74,8 +74,16 @@ class SpringBootBuilderMetadataTest(unittest.TestCase):
         self.assertNotIn("private Long id;", producto_request)
         self.assertIn("| GET | `/api/productos` | Listar Producto |", readme)
         self.assertIn("| POST | `/api/productos` | Crear Producto |", readme)
+        self.assertIn("#### Crear - `POST /api/productos`", readme)
+        self.assertIn("#### Listar - `GET /api/productos`", readme)
+        self.assertIn("#### Obtener por ID - `GET /api/productos/{id}`", readme)
+        self.assertIn("URL de ejemplo: `GET /api/productos/1`", readme)
+        self.assertIn("#### Actualizar - `PUT /api/productos/{id}`", readme)
+        self.assertIn("URL de ejemplo: `PUT /api/productos/1`", readme)
+        self.assertIn("#### Eliminar - `DELETE /api/productos/{id}`", readme)
+        self.assertIn("no lleva body ni devuelve JSON", readme)
         self.assertIn('"nombre": "ejemplo"', readme)
-        self.assertNotIn('"id":', readme)
+        self.assertIn('"id": 1', readme)
         self.assertIn("$env:DB_PASSWORD=\"tu_password\"", readme)
 
     def test_generates_composition_with_cardinality_and_lifecycle(self):
@@ -321,6 +329,14 @@ class SpringBootBuilderMetadataTest(unittest.TestCase):
         )
         self.assertIn('"idUsuario": 1', readme)
         self.assertIn('"idProyecto": 1', readme)
+        self.assertIn(
+            "URL de ejemplo: `GET /api/proyecto-usuarios/1/1`",
+            readme,
+        )
+        self.assertIn(
+            "URL de ejemplo: `DELETE /api/proyecto-usuarios/1/1`",
+            readme,
+        )
 
     def test_natural_primary_key_is_received_in_request(self):
         context = {

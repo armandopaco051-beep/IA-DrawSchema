@@ -1284,6 +1284,27 @@ def entity_route_template(entity: Entity) -> str:
     return f"{base_route}/{{id}}"
 
 
+def entity_example_detail_route(entity: Entity) -> str:
+    """Sustituye los parametros de ruta por valores utilizables en Postman."""
+
+    route = entity_route_template(entity)
+    if entity.is_composite_id:
+        for attribute in entity.pk_attributes:
+            route = route.replace(
+                f"{{{attribute.java_name}}}",
+                str(json_example_value(attribute.java_type)).lower()
+                if attribute.java_type == "Boolean"
+                else str(json_example_value(attribute.java_type)),
+            )
+        return route
+
+    value = json_example_value(entity.id_attribute.java_type)
+    return route.replace(
+        "{id}",
+        str(value).lower() if entity.id_attribute.java_type == "Boolean" else str(value),
+    )
+
+
 def generate_readme(
     project_name: str,
     database_name: str,
@@ -1316,21 +1337,76 @@ def generate_readme(
             attribute.java_name: json_example_value(attribute.java_type)
             for attribute in request_attributes(entity)
         }
+        response_body = {
+            attribute.java_name: json_example_value(attribute.java_type)
+            for attribute in entity.attributes
+        }
         request_json = json.dumps(request_body, ensure_ascii=False, indent=2)
+        response_json = json.dumps(response_body, ensure_ascii=False, indent=2)
+        collection_response_json = json.dumps(
+            [response_body],
+            ensure_ascii=False,
+            indent=2,
+        )
+        example_detail_route = entity_example_detail_route(entity)
         example_sections.append(
             "\n".join(
                 [
                     f"### {entity.name}",
                     "",
-                    f"Crear: `POST {collection_route}`",
+                    f"#### Crear - `POST {collection_route}`",
                     "",
-                    "Actualizar: `PUT " + detail_route + "`",
-                    "",
-                    "Para ambas operaciones usa `Content-Type: application/json` y este cuerpo:",
+                    "En Postman usa **Body > raw > JSON**:",
                     "",
                     "```json",
                     request_json,
                     "```",
+                    "",
+                    "Respuesta `201 Created`:",
+                    "",
+                    "```json",
+                    response_json,
+                    "```",
+                    "",
+                    f"#### Listar - `GET {collection_route}`",
+                    "",
+                    "Esta peticion no lleva body. Respuesta `200 OK`:",
+                    "",
+                    "```json",
+                    collection_response_json,
+                    "```",
+                    "",
+                    f"#### Obtener por ID - `GET {detail_route}`",
+                    "",
+                    f"URL de ejemplo: `GET {example_detail_route}`",
+                    "",
+                    "Esta peticion no lleva body. Respuesta `200 OK`:",
+                    "",
+                    "```json",
+                    response_json,
+                    "```",
+                    "",
+                    f"#### Actualizar - `PUT {detail_route}`",
+                    "",
+                    f"URL de ejemplo: `PUT {example_detail_route}`",
+                    "",
+                    "En Postman usa **Body > raw > JSON**:",
+                    "",
+                    "```json",
+                    request_json,
+                    "```",
+                    "",
+                    "Respuesta `200 OK`:",
+                    "",
+                    "```json",
+                    response_json,
+                    "```",
+                    "",
+                    f"#### Eliminar - `DELETE {detail_route}`",
+                    "",
+                    f"URL de ejemplo: `DELETE {example_detail_route}`",
+                    "",
+                    "Esta peticion no lleva body ni devuelve JSON. La respuesta correcta es `204 No Content`.",
                 ]
             )
         )
@@ -1414,7 +1490,7 @@ En las rutas de detalle sustituye `{{id}}` y los identificadores compuestos por 
 
 ## JSON para Postman
 
-En Postman selecciona **Body > raw > JSON** para peticiones `POST` y `PUT`.
+Los ejemplos siguientes muestran el body y la respuesta esperada de cada operacion CRUD. Usa `Content-Type: application/json` solamente en `POST` y `PUT`.
 
 {examples}
 
