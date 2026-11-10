@@ -1,4 +1,6 @@
 import unittest
+
+import httpx
 from copy import deepcopy
 from unittest.mock import AsyncMock, patch
 
@@ -42,3 +44,21 @@ class ExecutionChangesTest(unittest.IsolatedAsyncioTestCase):
         result = await self._execute(updated)
         self.assertTrue(result.success)
         self.assertEqual(result.diagrama, updated)
+
+    async def test_permission_connection_failure_returns_actionable_error(self):
+        action = PlannerAction(order=1, tool="create_class", description="Crear", arguments={"name": "Reserva"})
+        request = DiagramExecutePlanRequest(diagrama_id=1, proyecto_id=2, actions=[action], confirmed=True)
+        with patch("app.agents.diagram_agent.verify_user_permission", new_callable=AsyncMock, side_effect=httpx.ConnectError("offline")):
+            result = await execute_plan(request, "token")
+        self.assertFalse(result.success)
+        self.assertIn("Recarga el diagrama", result.message)
+
+    async def test_structured_backend_error_does_not_crash_response(self):
+        action = PlannerAction(order=1, tool="create_class", description="Crear", arguments={"name": "Reserva"})
+        request = DiagramExecutePlanRequest(diagrama_id=1, actions=[action], confirmed=True)
+        response = httpx.Response(422, json={"detail": [{"msg": "invalid"}]}, request=httpx.Request("GET", "https://backend.test"))
+        error = httpx.HTTPStatusError("invalid", request=response.request, response=response)
+        with patch("app.agents.diagram_agent.load_diagram_context", new_callable=AsyncMock, side_effect=error):
+            result = await execute_plan(request, "token")
+        self.assertFalse(result.success)
+        self.assertIn("rechazó", result.message)

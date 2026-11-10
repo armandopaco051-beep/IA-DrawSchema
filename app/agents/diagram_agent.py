@@ -1,3 +1,4 @@
+import logging
 from copy import deepcopy
 
 import httpx
@@ -12,6 +13,9 @@ from app.tools.diagram_tools import execute_diagram_action, load_diagram_context
 
 
 from app.services.rbac_guard import verify_user_permission
+
+
+logger = logging.getLogger(__name__)
 
 
 async def execute_plan(datos: DiagramExecutePlanRequest, token: str | None):
@@ -36,11 +40,6 @@ async def execute_plan(datos: DiagramExecutePlanRequest, token: str | None):
             executed=[], failed_action=pending_questions[0], diagrama=None,
         )
 
-    # Validar permisos RBAC si se proporciona el id del proyecto
-    if datos.proyecto_id is not None:
-        await verify_user_permission(datos.proyecto_id, token, min_role="EDITOR")
-
-
     for action in datos.actions:
         if action.requires_confirmation and not datos.confirmed:
             return DiagramExecutePlanResponse(
@@ -52,6 +51,9 @@ async def execute_plan(datos: DiagramExecutePlanRequest, token: str | None):
             )
 
     try:
+        if datos.proyecto_id is not None:
+            await verify_user_permission(datos.proyecto_id, token, min_role="EDITOR")
+
         current_diagrama = await load_diagram_context(datos.diagrama_id, token)
         original_content = deepcopy(current_diagrama.get("contenido"))
         if datos.expected_version is not None and current_diagrama.get("version") != datos.expected_version:
@@ -110,7 +112,15 @@ async def execute_plan(datos: DiagramExecutePlanRequest, token: str | None):
 
         return DiagramExecutePlanResponse(
             success=False,
-            message=detail,
+            message=detail if isinstance(detail, str) else "El backend rechazó una acción del plan. Revisa sus datos y solicita un plan actualizado.",
             executed=executed,
             diagrama=None,
+        )
+
+    except httpx.RequestError:
+        logger.exception("Fallo de comunicación al aplicar plan en diagrama %s; acciones completadas: %s", datos.diagrama_id, len(executed))
+        return DiagramExecutePlanResponse(
+            success=False,
+            message="No se pudo confirmar la comunicación con el backend principal. Recarga el diagrama antes de reintentar: algunas acciones podrían haberse guardado.",
+            executed=executed, diagrama=None,
         )
