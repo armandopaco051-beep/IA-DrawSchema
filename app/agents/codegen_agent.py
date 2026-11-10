@@ -1,7 +1,8 @@
 from agents import Agent, AgentOutputSchema, Runner
 
-from app.config.agents_models import get_agent_model
+from app.config.agents_models import get_agent_model, get_agent_provider
 from app.providers.ai_provider import configure_ai_provider
+from app.prompts.gemini_rules import GEMINI_RULES
 from app.schemas.codegen import CodegenResponse
 
 
@@ -150,12 +151,19 @@ No expliques fuera del JSON.
 """
 
 
-codegen_agent = Agent(
-    name="Codegen Agent",
-    instructions=CODEGEN_INSTRUCTIONS,
-    model=get_agent_model("codegen"),
-    output_type=AgentOutputSchema(CodegenResponse, strict_json_schema=False),
-)
+def create_codegen_agent():
+    if get_agent_provider("codegen") == "ollama":
+        from app.agents.local.codegen_agent import create_codegen_agent as create_local_agent
+        return create_local_agent()
+    return Agent(
+        name="Codegen Agent",
+        instructions=GEMINI_RULES + "\n" + CODEGEN_INSTRUCTIONS,
+        model=get_agent_model("codegen"),
+        output_type=AgentOutputSchema(CodegenResponse, strict_json_schema=False),
+    )
+
+
+codegen_agent = create_codegen_agent()
 
 
 def build_codegen_input(
@@ -186,10 +194,13 @@ async def run_codegen(
     base_package: str,
     database_name: str,
 ):
-    configure_ai_provider()
+    if get_agent_provider("codegen") == "ollama":
+        from app.agents.local.codegen_agent import run_codegen as run_local_agent
+        return await run_local_agent(message, context, project_name, base_package, database_name)
+    configure_ai_provider("codegen")
 
     result = await Runner.run(
-        codegen_agent,
+        create_codegen_agent(),
         build_codegen_input(
             message=message,
             context=context,

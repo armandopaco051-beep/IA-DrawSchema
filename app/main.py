@@ -2,11 +2,13 @@ import httpx
 from fastapi import FastAPI, File, Form, Header, HTTPException, UploadFile, status
 from fastapi.middleware.cors import CORSMiddleware
 
-from app.agents.planner_agent import run_planner
-from app.config.agents_models import get_agent_model_name
+from app.services.chat_orchestrator import run_chat
+from app.agents.local.interpreter import LocalInferenceError
+from app.config.agents_models import get_agent_model_name, select_text_provider
 from app.config.settings import settings
-from app.schemas.chat import ChatRequest, ChatResponse, PlannerRequest, PlannerResponse
+from app.schemas.chat import ChatRequest, ChatResponse, PlannerRequest, PlannerResponse, PlannerApiResponse
 from app.services.backend_client import get_diagrama, get_proyecto, get_permisos_usuario
+from app.services.backend_client import get_contexto_chat
 from app.services.rbac_guard import verify_user_permission
 
 from app.agents.diagram_agent import execute_plan
@@ -103,6 +105,9 @@ def health():
         "servicio": "DrawSchemaAI",
         "backend_principal": settings.BACKEND_API_URL,
         "proveedor": settings.AI_PROVIDER,
+        "proveedores_texto": ["gemini", "local"],
+        "modelo_texto_local": settings.OLLAMA_MODEL,
+        "proveedor_imagenes": "gemini",
         "modelo_planner": get_agent_model_name("planner"),
         "modelo_diagram": get_agent_model_name("diagram"),
         "modelo_suggestion": get_agent_model_name("suggestion"),
@@ -178,7 +183,7 @@ async def chat(datos: ChatRequest):
 
 
 # Endpoint para el planner
-@app.post("/ai/planner", response_model=PlannerResponse)
+@app.post("/ai/planner", response_model=PlannerApiResponse)
 async def planner(
     datos: PlannerRequest,
     authorization: str | None = Header(default=None),
@@ -186,11 +191,55 @@ async def planner(
     token = extract_token(authorization)
     context = await build_context(datos.proyecto_id, datos.diagrama_id, token)
 
-    if datos.user_role:
-        context["user_role"] = datos.user_role.upper()
+    if datos.conversacion_id is not None:
+        try:
+            conversation = await get_contexto_chat(datos.conversacion_id, token, datos.mensaje_id)
+        except httpx.HTTPStatusError as exc:
+            raise HTTPException(exc.response.status_code, "No tienes acceso a esta conversación") from exc
+        except httpx.HTTPError as exc:
+            raise HTTPException(503, "No se pudo cargar el historial") from exc
+        if conversation.get("proyecto_id") != datos.proyecto_id:
+            raise HTTPException(400, "La conversación no pertenece al proyecto")
+        requester = conversation.get("solicitante") or {}
+        current_question = conversation.get("consulta_actual")
+        if datos.mensaje_id is not None:
+            if not current_question or current_question.get("id") != datos.mensaje_id:
+                raise HTTPException(400, "No se pudo identificar la consulta original")
+            if current_question.get("autor_codigo") != requester.get("codigo"):
+                raise HTTPException(403, "La consulta pertenece a otro participante")
+            if current_question.get("diagrama_id") != datos.diagrama_id:
+                raise HTTPException(400, "El diagrama no coincide con la consulta original")
+            datos = datos.model_copy(update={"message": current_question["texto"]})
+        context["conversacion"] = conversation
+        # History is conversational evidence, never the current diagram state.
+        context["conversacion"] = {
+            **conversation,
+            "mensajes": [m for m in conversation.get("mensajes", [])
+                         if m.get("diagrama_id") == datos.diagrama_id],
+        }
+        context["solicitante"] = requester
+        context["consulta_actual"] = current_question
+    if datos.diagrama_id is not None and datos.proyecto_id is not None:
+        if (context.get("diagrama") or {}).get("id") != datos.diagrama_id:
+            raise HTTPException(400, "El backend devolvió un diagrama diferente del solicitado")
+        if (context.get("diagrama") or {}).get("id_proyecto") != datos.proyecto_id:
+            raise HTTPException(400, "El diagrama no pertenece al proyecto")
+    diagram = context.get("diagrama") or {}
+    context["diagrama_activo"] = {
+        "id": diagram.get("id"), "nombre": diagram.get("nombre"),
+        "version": diagram.get("version"),
+        "fuente": "diagrama guardado obtenido del backend para esta consulta",
+    }
 
     try:
-        return await run_planner(datos.message, context)
+        with select_text_provider(datos.text_provider):
+            plan = await run_chat(datos.message, context)
+            return PlannerApiResponse(
+                **plan.model_dump(), provider=datos.text_provider,
+                model=get_agent_model_name("planner"),
+            )
+    except LocalInferenceError as exc:
+        raise HTTPException(status_code=502, detail={"code": exc.code, "message": str(exc)}) from exc
     except RuntimeError as exc:
         raise HTTPException(status_code=500, detail=str(exc)) from exc
     except Exception as exc:

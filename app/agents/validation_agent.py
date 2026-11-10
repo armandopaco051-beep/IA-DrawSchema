@@ -1,7 +1,8 @@
 from agents import Agent, AgentOutputSchema, Runner
 
-from app.config.agents_models import get_agent_model
+from app.config.agents_models import get_agent_model, get_agent_provider
 from app.providers.ai_provider import configure_ai_provider
+from app.prompts.gemini_rules import GEMINI_RULES
 from app.schemas.validation import ValidationResponse
 
 
@@ -140,15 +141,25 @@ Criterio de valid:
 """
 
 
-validation_agent = Agent(
-    name="Validation Agent",
-    instructions=VALIDATION_INSTRUCTIONS,
-    model=get_agent_model("validation"),
-    output_type=AgentOutputSchema(ValidationResponse, strict_json_schema=False),
-)
+def create_validation_agent():
+    if get_agent_provider("validation") == "ollama":
+        from app.agents.local.validation_agent import create_validation_agent as create_local_agent
+        return create_local_agent()
+    return Agent(
+        name="Validation Agent",
+        instructions=GEMINI_RULES + "\n" + VALIDATION_INSTRUCTIONS,
+        model=get_agent_model("validation"),
+        output_type=AgentOutputSchema(ValidationResponse, strict_json_schema=False),
+    )
+
+
+validation_agent = create_validation_agent()
 
 
 def build_validation_input(message: str, context: dict | None = None):
+    if get_agent_provider('validation') == 'ollama':
+        from app.agents.local.context import build_local_input
+        return build_local_input(message, context)
     return f"""
 Peticion del usuario:
 {message}
@@ -159,10 +170,13 @@ Contexto actual del proyecto/diagrama:
 
 
 async def run_validation(message: str, context: dict | None = None):
-    configure_ai_provider()
+    if get_agent_provider("validation") == "ollama":
+        from app.agents.local.validation_agent import run_validation as run_local_agent
+        return await run_local_agent(message, context)
+    configure_ai_provider("validation")
 
     result = await Runner.run(
-        validation_agent,
+        create_validation_agent(),
         build_validation_input(message, context),
     )
 

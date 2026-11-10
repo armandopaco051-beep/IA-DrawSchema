@@ -1,4 +1,8 @@
+from copy import deepcopy
+
 import httpx
+
+from app.services.plan_validation import prepare_association_actions
 
 from app.schemas.diagram_execution import (
     DiagramExecutePlanRequest,
@@ -21,6 +25,17 @@ async def execute_plan(datos: DiagramExecutePlanRequest, token: str | None):
             diagrama=None,
         )
 
+    pending_questions = [action for action in datos.actions if action.tool == "ask_user"]
+    if pending_questions:
+        return DiagramExecutePlanResponse(
+            success=False,
+            message="El plan todavía necesita una aclaración: " + " ".join(
+                str(action.arguments.get("question") or action.arguments.get("message") or action.description)
+                for action in pending_questions
+            ),
+            executed=[], failed_action=pending_questions[0], diagrama=None,
+        )
+
     # Validar permisos RBAC si se proporciona el id del proyecto
     if datos.proyecto_id is not None:
         await verify_user_permission(datos.proyecto_id, token, min_role="EDITOR")
@@ -38,8 +53,20 @@ async def execute_plan(datos: DiagramExecutePlanRequest, token: str | None):
 
     try:
         current_diagrama = await load_diagram_context(datos.diagrama_id, token)
+        original_content = deepcopy(current_diagrama.get("contenido"))
+        if datos.expected_version is not None and current_diagrama.get("version") != datos.expected_version:
+            return DiagramExecutePlanResponse(
+                success=False, message="El diagrama cambió desde esta respuesta. Solicita un plan actualizado.",
+                executed=[], diagrama=current_diagrama,
+            )
 
-        for action in sorted(datos.actions, key=lambda item: item.order):
+        prepared_actions, issues = prepare_association_actions(datos.actions, current_diagrama)
+        if issues:
+            return DiagramExecutePlanResponse(
+                success=False, message=" ".join(issues), executed=[], diagrama=current_diagrama,
+            )
+
+        for action in sorted(prepared_actions, key=lambda item: item.order):
             current_diagrama, result = await execute_diagram_action(
                 diagrama_id=datos.diagrama_id,
                 autor_codigo=datos.autor_codigo,
@@ -48,6 +75,17 @@ async def execute_plan(datos: DiagramExecutePlanRequest, token: str | None):
                 token=token,
             )
             executed.append(result)
+
+        if not isinstance(current_diagrama, dict) or not isinstance(current_diagrama.get("contenido"), dict):
+            return DiagramExecutePlanResponse(
+                success=False, message="El backend no devolvió el contenido actualizado del diagrama. Recarga el diagrama antes de volver a aplicar el plan.",
+                executed=executed, diagrama=None,
+            )
+        if current_diagrama["contenido"] == original_content:
+            return DiagramExecutePlanResponse(
+                success=False, message="No se detectaron cambios en el contenido del diagrama. El plan no produjo una modificación nueva.",
+                executed=executed, diagrama=current_diagrama,
+            )
 
         return DiagramExecutePlanResponse(
             success=True,

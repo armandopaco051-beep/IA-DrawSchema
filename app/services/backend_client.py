@@ -24,6 +24,17 @@ async def get_diagrama(diagrama_id: int, token: str | None = None):
         return response.json()
 
 
+async def get_contexto_chat(conversacion_id: int, token: str | None, mensaje_id: int | None = None):
+    async with httpx.AsyncClient(timeout=15) as client:
+        response = await client.get(
+            f"{settings.BACKEND_API_URL.rstrip('/')}/conversaciones/{conversacion_id}/contexto",
+            headers=build_headers(token),
+            params={"hasta_id": mensaje_id} if mensaje_id else {},
+        )
+        response.raise_for_status()
+        return response.json()
+
+
 async def get_proyecto(proyecto_id: int, token: str | None = None):
     async with httpx.AsyncClient(timeout=15) as client:
         response = await client.get(

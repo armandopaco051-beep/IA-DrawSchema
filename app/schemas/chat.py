@@ -20,6 +20,9 @@ class PlannerRequest(BaseModel):
     diagrama_id: int | None = None
     proyecto_id: int | None = None
     user_role: str | None = None
+    conversacion_id: int | None = Field(default=None, gt=0)
+    mensaje_id: int | None = Field(default=None, gt=0)
+    text_provider: Literal["gemini", "local"] = "gemini"
 
 class PlannerAction(BaseModel):
     order: int
@@ -41,6 +44,11 @@ class PlannerResponse(BaseModel):
     actions: list[PlannerAction] = Field(default_factory=list)
     questions: list[str] = Field(default_factory=list)
     can_execute: bool = False
+
+class PlannerApiResponse(PlannerResponse):
+    provider: Literal["gemini", "local"]
+    model: str
+
 
 class ChatRequest(BaseModel):
     message: str

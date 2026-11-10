@@ -44,7 +44,7 @@ VALID_CARDINALITIES = {
     "1..*",
 }
 
-RELATION_TYPES_WITHOUT_CARDINALITY = {"generalization"}
+RELATION_TYPES_WITHOUT_CARDINALITY = {"generalization", "realization", "templateBinding"}
 
 # hace la extraccion de los nodos del diagrama
 def get_nodes(diagrama: dict[str, Any]):

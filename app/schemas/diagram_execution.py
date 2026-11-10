@@ -11,6 +11,7 @@ class DiagramExecutePlanRequest(BaseModel):
     autor_codigo: str = "IA Assistant"
     actions: list[PlannerAction] = Field(min_length=1)
     confirmed: bool = False
+    expected_version: int | None = Field(default=None, ge=1)
 
 
 class DiagramActionResult(BaseModel):

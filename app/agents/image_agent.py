@@ -7,6 +7,8 @@ from litellm import acompletion
 
 from app.config.agents_models import (
     get_agent_model_name,
+    get_litellm_api_base,
+    get_image_fallback_models,
     get_litellm_api_key,
     normalize_litellm_model,
 )
@@ -575,13 +577,9 @@ async def run_image_agent(
     context: dict[str, Any],
     filename: str | None = None,
 ) -> ImageDiagramResponse:
-    configure_ai_provider()
+    configure_ai_provider("image")
     primary_model = normalize_litellm_model(get_agent_model_name("image"))
-    fallback_models = [
-        normalize_litellm_model(item.strip())
-        for item in settings.IMAGE_FALLBACK_MODELS.split(",")
-        if item.strip()
-    ]
+    fallback_models = get_image_fallback_models()
     model_candidates = list(dict.fromkeys([primary_model, *fallback_models]))
     image_url = f"data:{mime_type};base64,{base64.b64encode(image_bytes).decode('ascii')}"
     user_prompt = (
@@ -611,10 +609,10 @@ async def run_image_agent(
             "messages": messages,
             "response_format": {"type": "json_object"},
             "num_retries": 1,
-            "timeout": 90,
+            "timeout": settings.AI_REQUEST_TIMEOUT,
         }
-        if settings.LITELLM_API_BASE:
-            completion_kwargs["api_base"] = settings.LITELLM_API_BASE
+        if get_litellm_api_base(candidate):
+            completion_kwargs["api_base"] = get_litellm_api_base(candidate)
         try:
             response = await acompletion(**completion_kwargs)
             model_name = candidate

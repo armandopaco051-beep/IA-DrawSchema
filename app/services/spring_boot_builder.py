@@ -38,6 +38,7 @@ class Relationship:
     maps_id: str | None = None
     join_column: str | None = None
     target_id_type: str | None = None
+    join_columns: list[tuple[str, str]] = field(default_factory=list)
 
 
 @dataclass
@@ -230,6 +231,7 @@ def parse_entities(context: dict[str, Any]) -> tuple[list[Entity], list[str]]:
     diagrama = context.get("diagrama") or {}
     contenido = diagrama.get("contenido") or {}
     nodes = contenido.get("nodes") or []
+    nodes_by_id = {str(node.get("id")): node for node in nodes}
     entities: list[Entity] = []
     entities_by_node_id: dict[str, Entity] = {}
     used_names: set[str] = set()
@@ -248,6 +250,10 @@ def parse_entities(context: dict[str, Any]) -> tuple[list[Entity], list[str]]:
         attributes: list[Attribute] = []
 
         for attr_index, attr in enumerate(data.get("attributes") or []):
+            # La FK derivada ya se representa mediante la relación JPA;
+            # no generar también un campo escalar independiente para esa columna.
+            if (attr.get("_relationshipKey") or {}).get("role") == "many" and attr.get("foreignKey"):
+                continue
             attr_name = str(attr.get("name") or f"campo{attr_index + 1}")
             java_name = to_camel_case(attr_name, f"field{attr_index + 1}")
             java_type = map_java_type(attr.get("type"))
@@ -452,6 +458,15 @@ def parse_entities(context: dict[str, Any]) -> tuple[list[Entity], list[str]]:
         if collection and not base_field_name.endswith("s"):
             base_field_name = f"{base_field_name}s"
 
+        join_columns = []
+        if annotation in {"OneToMany", "ManyToOne"}:
+            owner_id, parent_id = (target_id, source_id) if annotation == "OneToMany" else (source_id, target_id)
+            for attr in (nodes_by_id.get(owner_id, {}).get("data") or {}).get("attributes") or []:
+                managed = attr.get("_relationshipKey") or {}
+                reference = managed.get("reference") or {}
+                if managed.get("role") == "many" and str(reference.get("nodeId")) == parent_id and str(managed.get("edgeId")) == str(edge.get("id", "")):
+                    join_columns.append((to_snake_case(attr["name"]), to_snake_case(reference["attribute"])))
+
         source.relationships.append(
             Relationship(
                 relation_type=relation_type,
@@ -465,6 +480,7 @@ def parse_entities(context: dict[str, Any]) -> tuple[list[Entity], list[str]]:
                 required=target_cardinality in {"1", "1..*"},
                 cascade_all=relation_type == "composition",
                 orphan_removal=relation_type == "composition" and annotation in {"OneToOne", "OneToMany"},
+                join_columns=join_columns,
             )
         )
 
@@ -613,6 +629,14 @@ def relationship_field_declaration(entity: Entity, relationship: Relationship) -
                 "    )",
             ]
         )
+    elif relationship.join_columns:
+        if len(relationship.join_columns) == 1:
+            column, referenced = relationship.join_columns[0]
+            lines.append(f'    @JoinColumn(name = "{column}", referencedColumnName = "{referenced}")')
+        else:
+            lines.append("    @JoinColumns({")
+            lines.append(",\n".join(f'        @JoinColumn(name = "{column}", referencedColumnName = "{referenced}")' for column, referenced in relationship.join_columns))
+            lines.append("    })")
     elif relationship.annotation == "OneToMany":
         lines.append(f'    @JoinColumn(name = "{entity.variable_name}_id")')
     else:

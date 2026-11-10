@@ -1,7 +1,8 @@
 from agents import Agent, AgentOutputSchema, Runner
 
-from app.config.agents_models import get_agent_model
+from app.config.agents_models import get_agent_model, get_agent_provider
 from app.providers.ai_provider import configure_ai_provider
+from app.prompts.gemini_rules import GEMINI_RULES
 from app.schemas.suggestion import SuggestionResponse
 
 
@@ -9,6 +10,17 @@ SUGGESTION_INSTRUCTIONS = """
 Eres el Suggestion Agent de DrawSchema.
 
 Tu funcion es analizar un diagrama UML existente y sugerir mejoras.
+Lee también proyecto.nombre, proyecto.descripcion, la petición actual y los requisitos del historial.
+Compara las responsabilidades del negocio con las clases, atributos y relaciones actuales.
+Si solicita clases o atributos faltantes, propone candidatos dinámicos del dominio: no te limites a relaciones.
+Para una nueva clase explica su responsabilidad, atributos iniciales y vínculos con clases existentes.
+Para un atributo indica clase destino, tipo orientativo y utilidad; no dupliques conceptos existentes.
+Justifica cada recomendación con evidencia del contexto, beneficio y supuestos. Distingue requisitos de mejoras opcionales.
+No impongas entidades típicas por costumbre. Si falta contexto del negocio, ofrece mejoras estructurales observables sin bloquear la respuesta.
+No afirmes que algo es obligatorio sin evidencia. Prioriza pocas recomendaciones útiles.
+Recomendar cambios no autoriza ejecutarlos. Para propuestas con varias acciones dependientes, explica la secuencia y usa action=null.
+Para atributos se permite recomendar sin action; no uses actualizaciones parciales que reemplacen atributos existentes.
+
 No debes ejecutar cambios.
 No debes guardar nada.
 No debes modificar el JSONB directamente.
@@ -25,7 +37,7 @@ Tu salida debe respetar exactamente el schema SuggestionResponse.
 
 Reglas importantes:
 - No sugieras relaciones duplicadas.
-- Si sugieres una relacion, usa nombres de clases que ya existan en nodes.
+- Puedes recomendar vínculos con clases nuevas propuestas, explicando que deben crearse antes. Una action create_relation solo puede apuntar a clases ya existentes; si faltan, deja action=null y describe la secuencia.
 - No inventes IDs internos.
 - No sugieras acciones destructivas.
 - Para esta primera version solo puedes sugerir acciones compatibles con DiagramAgent V1:
@@ -135,15 +147,25 @@ Si no hay mejoras claras, devuelve suggestions vacio y explica en summary.
 """
 
 
-suggestion_agent = Agent(
-    name="Suggestion Agent",
-    instructions=SUGGESTION_INSTRUCTIONS,
-    model=get_agent_model("suggestion"),
-    output_type=AgentOutputSchema(SuggestionResponse, strict_json_schema=False),
-)
+def create_suggestion_agent():
+    if get_agent_provider("suggestion") == "ollama":
+        from app.agents.local.suggestion_agent import create_suggestion_agent as create_local_agent
+        return create_local_agent()
+    return Agent(
+        name="Suggestion Agent",
+        instructions=GEMINI_RULES + "\n" + SUGGESTION_INSTRUCTIONS,
+        model=get_agent_model("suggestion"),
+        output_type=AgentOutputSchema(SuggestionResponse, strict_json_schema=False),
+    )
+
+
+suggestion_agent = create_suggestion_agent()
 
 
 def build_suggestion_input(message: str, context: dict | None = None):
+    if get_agent_provider('suggestion') == 'ollama':
+        from app.agents.local.context import build_local_input
+        return build_local_input(message, context)
     return f"""
 Peticion del usuario:
 {message}
@@ -154,10 +176,13 @@ Contexto actual del proyecto/diagrama:
 
 
 async def run_suggestion(message: str, context: dict | None = None):
-    configure_ai_provider()
+    if get_agent_provider("suggestion") == "ollama":
+        from app.agents.local.suggestion_agent import run_suggestion as run_local_agent
+        return await run_local_agent(message, context)
+    configure_ai_provider("suggestion")
 
     result = await Runner.run(
-        suggestion_agent,
+        create_suggestion_agent(),
         build_suggestion_input(message, context),
     )
 
