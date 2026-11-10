@@ -14,6 +14,8 @@ def configure_ai_provider(agent_name: str = "planner"):
     provider = get_agent_provider(agent_name)
 
     if provider == "ollama":
+        from app.providers.ollama_connection import validate_worker_config
+        validate_worker_config()
         if not settings.OLLAMA_BASE_URL.startswith(("http://", "https://")):
             raise RuntimeError("OLLAMA_BASE_URL debe ser una URL HTTP o HTTPS")
         if not settings.OLLAMA_MODEL.strip() or settings.OLLAMA_MODEL.endswith("-cloud"):

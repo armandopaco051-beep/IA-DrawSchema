@@ -1,6 +1,7 @@
 from app.config.settings import settings
 from contextlib import contextmanager
 from contextvars import ContextVar
+from app.providers.ollama_connection import get_ollama_api_key, get_ollama_base_url
 
 _text_provider = ContextVar("text_provider", default=None)
 
@@ -56,7 +57,7 @@ def normalize_litellm_model(model_name: str):
 
 def get_litellm_api_key(model_name: str):
     if model_name.startswith("openai/") and get_agent_provider() == "ollama":
-        return settings.OLLAMA_API_KEY
+        return get_ollama_api_key()
     if model_name.startswith("gemini/"):
         return settings.GEMINI_API_KEY
 
@@ -69,7 +70,7 @@ def get_litellm_api_base(model_name: str | None = None):
     if model_name and model_name.startswith("gemini/"):
         return settings.LITELLM_API_BASE or None
     if get_agent_provider() == "ollama":
-        return settings.OLLAMA_BASE_URL.rstrip("/")
+        return get_ollama_base_url()
     return settings.LITELLM_API_BASE
 
 

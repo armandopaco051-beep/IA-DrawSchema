@@ -6,6 +6,7 @@ from pydantic import BaseModel, ValidationError, model_validator
 from typing import Literal
 
 from app.config.settings import settings
+from app.providers.ollama_connection import native_chat
 from .commands import Interpretation
 from .context import build_local_input
 from .commands import Command, Attribute, Method
@@ -259,14 +260,11 @@ async def repair_design_links(sketch, message, problem):
         "foreign_keys": {"type": "array", "minItems": 1, "maxItems": 8, "items": fk_schema},
         "association_classes": {"type": "array", "maxItems": 3, "items": assoc_schema}},
         "required": ["foreign_keys", "association_classes"], "additionalProperties": False}
-    base = settings.OLLAMA_BASE_URL.rstrip("/").removesuffix("/v1")
-    headers = {"Authorization": f"Bearer {settings.OLLAMA_API_KEY}"} if settings.OLLAMA_API_KEY else {}
-    async with httpx.AsyncClient(timeout=settings.AI_REQUEST_TIMEOUT) as client:
-        response = await client.post(base + "/api/chat", headers=headers, json={
-            "model": settings.OLLAMA_MODEL, "stream": False, "format": schema,
-            "messages": [{"role": "system", "content": "Relaciona las tablas dadas para el negocio solicitado. Conserva sus nombres EXACTOS. Conecta todas en un conjunto coherente. foreign_keys indica table que guarda column referenciando references.id; no uses id como FK. Una tabla puente necesita dos FK. association_classes es opcional: si la usas, source y target son los DOS padres de la intermedia y los tres nombres deben ser distintos. No crees más tablas."},
-                         {"role": "user", "content": json.dumps({"peticion": message, "tablas": [t.model_dump() for t in sketch.tables], "problema_a_corregir": str(problem)}, ensure_ascii=False)}],
-            "options": {"temperature": 0, "num_ctx": settings.OLLAMA_CONTEXT_SIZE, "num_predict": 768}})
+    response = await native_chat({
+        "model": settings.OLLAMA_MODEL, "stream": False, "format": schema,
+        "messages": [{"role": "system", "content": "Relaciona las tablas dadas para el negocio solicitado. Conserva sus nombres EXACTOS. Conecta todas en un conjunto coherente. foreign_keys indica table que guarda column referenciando references.id; no uses id como FK. Una tabla puente necesita dos FK. association_classes es opcional: si la usas, source y target son los DOS padres de la intermedia y los tres nombres deben ser distintos. No crees más tablas."},
+                     {"role": "user", "content": json.dumps({"peticion": message, "tablas": [t.model_dump() for t in sketch.tables], "problema_a_corregir": str(problem)}, ensure_ascii=False)}],
+        "options": {"temperature": 0, "num_ctx": settings.OLLAMA_CONTEXT_SIZE, "num_predict": 768}})
     response.raise_for_status()
     payload = response.json()
     if payload.get("done_reason") == "length":
@@ -482,16 +480,13 @@ Usa únicamente el diagrama actual para afirmar qué elementos existen.
         schema = AdvisoryExtraction.model_json_schema()
     if correction:
         prompt += "\nCorrige estos problemas en tu interpretación:\n" + "\n".join(correction)
-    base = settings.OLLAMA_BASE_URL.rstrip("/").removesuffix("/v1")
-    headers = {"Authorization": f"Bearer {settings.OLLAMA_API_KEY}"} if settings.OLLAMA_API_KEY else {}
-    async with httpx.AsyncClient(timeout=settings.AI_REQUEST_TIMEOUT) as client:
-        response = await client.post(base + "/api/chat", headers=headers, json={
-            "model": settings.OLLAMA_MODEL,
-            "messages": [{"role": "system", "content": system}, {"role": "user", "content": prompt}],
-            "format": schema, "stream": False,
-            "options": {"temperature": 0, "num_ctx": settings.OLLAMA_CONTEXT_SIZE,
-                        "num_predict": 768 if creates_participants else 384 if relation_only or relation_edit else min(1024, settings.OLLAMA_PLAN_TOKENS) if design_advice or design_generation else settings.OLLAMA_PLAN_TOKENS},
-        })
+    response = await native_chat({
+        "model": settings.OLLAMA_MODEL,
+        "messages": [{"role": "system", "content": system}, {"role": "user", "content": prompt}],
+        "format": schema, "stream": False,
+        "options": {"temperature": 0, "num_ctx": settings.OLLAMA_CONTEXT_SIZE,
+                    "num_predict": 768 if creates_participants else 384 if relation_only or relation_edit else min(1024, settings.OLLAMA_PLAN_TOKENS) if design_advice or design_generation else settings.OLLAMA_PLAN_TOKENS},
+    })
     response.raise_for_status()
     data = response.json()
     if data.get("done_reason") == "length":

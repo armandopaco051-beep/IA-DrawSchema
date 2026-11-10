@@ -4,6 +4,8 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from app.services.chat_orchestrator import run_chat
 from app.agents.local.interpreter import LocalInferenceError
+from app.routers.local_worker import router as local_worker_router
+from app.services.worker_relay import WorkerRelayError
 from app.config.agents_models import get_agent_model_name, select_text_provider
 from app.config.settings import settings
 from app.schemas.chat import ChatRequest, ChatResponse, PlannerRequest, PlannerResponse, PlannerApiResponse
@@ -31,6 +33,8 @@ app = FastAPI(
     title="DrawSchema AI Service",
     version="1.0.0",
 )
+
+app.include_router(local_worker_router)
 
 app.add_middleware(
     CORSMiddleware,
@@ -238,6 +242,8 @@ async def planner(
                 **plan.model_dump(), provider=datos.text_provider,
                 model=get_agent_model_name("planner"),
             )
+    except WorkerRelayError as exc:
+        raise HTTPException(status_code=exc.status, detail={"code": exc.code, "message": str(exc)}) from exc
     except LocalInferenceError as exc:
         raise HTTPException(status_code=502, detail={"code": exc.code, "message": str(exc)}) from exc
     except RuntimeError as exc:
